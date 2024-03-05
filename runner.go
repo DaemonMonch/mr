@@ -52,18 +52,15 @@ type Job struct {
 	p *os.Process
 }
 func (j *Job) wait() {
+	defer j.wg.Done()
 	if j.p != nil {
-		j.p.Wait()
+		s,err := j.p.Wait()
+		fmt.Printf("wait end %v %v \n",s,err)
 	}
 }
 
 func (j *Job) Start(ctx context.Context) error {
-	defer func(){
-		j.wg.Done()
-		if j.p != nil {
-			j.p.Release()
-		}
-	}()
+	
 	cmd := exec.CommandContext(ctx, j.Cmd)
 	cmd.Args = append(cmd.Args, j.Args...)
 	cmd.Dir = j.Path
@@ -194,9 +191,9 @@ func (jm *jobManager) jobs() []string{
 
 func (jm *jobManager) restart(id string) error {
 	jm.l.RLock()
-	defer jm.l.RUnlock()
-
 	runningjob := jm.runningJobs[id]
+	jm.l.RUnlock()
+	fmt.Println("restart id ",id)
 	jm.wg.Add(1)
 	runningjob.cancel()
 	runningjob.job.wait()
@@ -204,13 +201,14 @@ func (jm *jobManager) restart(id string) error {
 		nctx,cancel := context.WithCancel(jm.ctx)
 			err := runningjob.job.Start(nctx)
 			if err != nil {
-				println(err)
+				fmt.Printf("start %s fail %v\n",id,err)
 				cancel()
 				return
 			}
 			jm.l.Lock()
-			defer jm.l.Unlock()
 			runningjob.cancel = cancel
+			jm.l.Unlock()
+			runningjob.job.wait()
 	}()
 
 	return nil
@@ -231,7 +229,7 @@ func (jm *jobManager) startJobs(ctx context.Context) {
 		job.stdout = lw
 		job.errout = lw
 		
-		go func() {
+		go func(id int) {
 			nctx,cancel := context.WithCancel(ctx)
 			err := job.Start(nctx)
 			if err != nil {
@@ -240,12 +238,14 @@ func (jm *jobManager) startJobs(ctx context.Context) {
 				return
 			}
 			jm.l.Lock()
-			defer jm.l.Unlock()
-			jm.runningJobs[fmt.Sprint(i)] = &runningJob{job,jobName,cancel}
+			runningjob := &runningJob{job,jobName,cancel}
+			jm.runningJobs[fmt.Sprint(id)] = runningjob
+			jm.l.Unlock()
+			runningjob.job.wait()
 
-		}()
-
+		}(i)
 		i++
+		
 	}
 }
 
@@ -268,13 +268,12 @@ func main() {
 		for {
 			cmd,_ := ttyutil.ReadLine(tty)
 			if cmd == "ls" {
-				fmt.Fprintf(tty.Output(),"> %v \n",jobManager.jobs())
 				for _,j := range jobManager.jobs() {
-					fmt.Fprintf(tty.Output(),"> %s \n",j)
+					fmt.Fprintf(tty.Output(),"> %s",j)
 				}
 			}
 
-			if strings.Index(cmd,"rs") > -1 {
+			if strings.Contains(cmd,"rs")  {
 				sp := strings.Split(cmd," ")
 				if len(sp) == 2{
 					jobManager.restart(sp[1])	
