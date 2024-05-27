@@ -21,41 +21,55 @@ type runningJob struct {
 }
 
 func (r *runningJob) start(ctx context.Context, configFile string) error {
-	err := r.runner.Start(ctx, &RunnerCtx{r.jobCfg, configFile})
+	log := GetLogger(configFile, r.jobCfg)
+	err := r.runner.Start(ctx, &RunnerCtx{r.jobCfg, log})
 	if err != nil {
 		return err
 	}
 
-	if r.healthChecker != nil {
-		r.startHealthCheck(ctx)
-	}
-
+	r.startHealthCheck(ctx)
 	return nil
 }
 
 func (r *runningJob) startHealthCheck(ctx context.Context) {
 	healthCheckCfg := r.jobCfg.HealthCheck
+	var checkDelayTime time.Duration
+	var checkInterval time.Duration
+	if healthCheckCfg != nil {
+		checkDelayTime = healthCheckCfg.CheckInterval
+		checkInterval = healthCheckCfg.CheckInterval
+	}
+
+	doCheck := func() {
+		err := r.healthChecker.Check()
+		if err != nil {
+			fmt.Printf("health check for %s fail %v\n", r.jobCfg.Name, err)
+			r.jm.l.Lock()
+			delete(r.jm.runningJobs, fmt.Sprint(r.jobId))
+			r.jm.l.Unlock()
+		} else {
+			r.jm.l.Lock()
+			r.jm.runningJobs[fmt.Sprint(r.jobId)] = r
+			r.jm.l.Unlock()
+		}
+	}
+
 	go func() {
-		if healthCheckCfg.CheckDelayTime > 0 {
+		if checkDelayTime > 0 {
 			<-time.After(healthCheckCfg.CheckDelayTime)
 		}
+
+		if checkInterval == 0 {
+			doCheck()
+			return
+		}
+
 		ticker := time.NewTicker(healthCheckCfg.CheckInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				err := r.healthChecker.Check()
-				if err != nil {
-					fmt.Printf("health check for %s fail %v\n", r.jobCfg.Name, err)
-					r.jm.l.Lock()
-					delete(r.jm.runningJobs, fmt.Sprint(r.jobId))
-					r.jm.l.Unlock()
-				} else {
-					r.jm.l.Lock()
-					r.jm.runningJobs[fmt.Sprint(r.jobId)] = r
-					r.jm.l.Unlock()
-				}
-
+				doCheck()
 			case <-ctx.Done():
 				fmt.Printf("health check for %s stopped \n", r.jobCfg.Name)
 				return
@@ -153,12 +167,7 @@ func (jm *JobManager) StartJobs(ctx context.Context) {
 			runner := GetRunner()
 			nctx, cancel := context.WithCancel(jm.ctx)
 			runningjob := &runningJob{jobCfg: job, runner: runner, cancel: cancel, jm: jm, jobId: id}
-			healthCheckCfg := job.HealthCheck
-			if healthCheckCfg != nil {
-
-				checker := GetHealthChecker(*healthCheckCfg)
-				runningjob.healthChecker = checker
-			}
+			runningjob.healthChecker = GetHealthChecker(job.HealthCheck)
 			err := runningjob.start(nctx, jm.cfg.configFile)
 			if err != nil {
 				fmt.Printf("start %s fail %v\n", job.Name, err)

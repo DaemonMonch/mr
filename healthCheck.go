@@ -11,19 +11,28 @@ type HealthChecker interface {
 	Check() error
 }
 
-func GetHealthChecker(config HealthCheck) HealthChecker {
+func GetHealthChecker(config *HealthCheck) HealthChecker {
+	if config == nil {
+		return &NoopChecker{}
+	}
 	return NewTcpChecker(config)
 }
 
+type NoopChecker struct{}
+
+func (tc *NoopChecker) Check() error {
+	return nil
+}
+
 type TcpChecker struct {
-	config        HealthCheck
+	config        *HealthCheck
 	dialer        *net.Dialer
 	conn          net.Conn
 	b             []byte
 	connAliveTime time.Duration
 }
 
-func NewTcpChecker(config HealthCheck) *TcpChecker {
+func NewTcpChecker(config *HealthCheck) *TcpChecker {
 	dialer := &net.Dialer{
 		Timeout: config.MaxAwaitTime,
 	}
